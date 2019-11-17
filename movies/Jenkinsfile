@@ -12,6 +12,7 @@ pipeline {
     environment {
         DEV_PROJECT = "koduruharikrishna-movies-dev"
         STAGE_PROJECT = "koduruharikrishna-movies-stage"
+QA_PROJECT = "koduruharikrishna-movies-qa"
         APP_GIT_URL = "https://github.com/koduruhari5621/DO288-apps"
         NEXUS_SERVER = "http://nexus-common.apps.ocp-ap1.prod.nextcle.com/repository/java"
 
@@ -151,5 +152,56 @@ pipeline {
                 }
             }
         }
+ stage('Promote to QA Env') {
+            steps {
+                timeout(time: 60, unit: 'MINUTES') {
+                    input message: "Promote to Quality Analysis ?"
+                }
+                script {
+                    openshift.withCluster() {
+                    openshift.tag("${QA_PROJECT}/${APP_NAME}:latest", "${QA_PROJECT}/${APP_NAME}:qa")
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to QA Env') {
+            steps {
+                echo '### Cleaning existing resources in QA ###'
+                sh '''
+                        oc project ${QA_PROJECT}
+                        oc delete all -l app=${APP_NAME}
+                        sleep 5
+                   '''
+
+                echo '### Creating a new app in QA ###'
+                sh '''
+                        oc project ${QA_PROJECT}
+                        oc new-app --name ${APP_NAME} -i ${APP_NAME}:qa
+                        oc expose svc/${APP_NAME}
+                   '''
+            }
+        }
+
+        stage('Wait for deployment in QA') {
+            steps {
+                sh "oc get route ${APP_NAME} -n ${QA_PROJECT} -o jsonpath='{ .spec.host }' --loglevel=4 > routehost"
+
+                script {
+                    routeHost = readFile('routehost').trim()
+
+                    openshift.withCluster() {
+                        openshift.withProject( "${QA_PROJECT}" ) {
+                            def deployment = openshift.selector("dc", "${APP_NAME}").rollout()
+                            openshift.selector("dc", "${APP_NAME}").related('pods').untilEach(1) {
+                                return (it.object().status.phase == "Running")
+                            }
+                        }
+                        echo "Deployment to QA env is complete. Access the API endpoint at the URL http://${routeHost}/movies."
+                    }
+                }
+            }
+        }
+
     }
 }
